@@ -15,6 +15,9 @@ limitations under the License.
 """
 
 import json
+import os
+import pwd
+import requests
 import urllib
 from urlparse import urlsplit
 
@@ -23,9 +26,74 @@ from swift.proxy.controllers.base import Controller
 from swift.proxy.server import Application as ProxyApplication
 
 from .provider_factory import create_provider
+from .sync_s3 import SyncS3
 from .utils import (
     ClosingResourceIterable, filter_hop_by_hop_headers,
     convert_to_swift_headers)
+
+
+# Some deployment utilities
+def get_env_options():
+    opts = {}
+
+    opts['AWS_ACCESS_KEY_ID'] = os.environ.get('AWS_ACCESS_KEY_ID', None)
+    opts['AWS_SECRET_ACCESS_KEY'] = os.environ.get('AWS_SECRET_ACCESS_KEY',
+                                                   None)
+
+    aws_creds_relative_uri = os.environ.get(
+        'AWS_CONTAINER_CREDENTIALS_RELATIVE_URI', None)
+    # Grabbing creds in this order and with this logic allows a container
+    # deployment to overide the ECS-configured temporary IAM role session creds
+    # with a specific access key id and secret access key.
+    if aws_creds_relative_uri and not (opts['AWS_ACCESS_KEY_ID'] and
+                                       opts['AWS_SECRET_ACCESS_KEY']):
+        creds_uri = 'http://169.254.170.2%s' % (aws_creds_relative_uri,)
+        resp = requests.get(creds_uri)
+        resp.raise_for_status()
+        aws_creds = resp.json()
+        print "aws_creds: %r" % aws_creds
+        opts['AWS_ACCESS_KEY_ID'] = aws_creds['AccessKeyId']
+        opts['AWS_SECRET_ACCESS_KEY'] = aws_creds['SecretAccessKey']
+        opts['AWS_SECURITY_TOKEN_STRING'] = aws_creds['Token']
+        # NOTE: this temporary key will expire in like a day, but we only use
+        # it for fetching config on start-up, so that shouldn't be a problem.
+
+    if not (opts['AWS_ACCESS_KEY_ID'] and opts['AWS_SECRET_ACCESS_KEY']):
+        exit('Missing either AWS_CONTAINER_CREDENTIALS_RELATIVE_URI or '
+             'AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY env vars!')
+
+    opts['CONF_BUCKET'] = os.environ.get('CONF_BUCKET', None)
+    if not opts['CONF_BUCKET']:
+        exit('Missing CONF_BUCKET env var!')
+
+    opts['CONF_ENDPOINT'] = os.environ.get('CONF_ENDPOINT', '')
+    opts['CONF_NAME'] = os.environ.get('CONF_NAME', 'proxymc.conf')
+
+    print "env_opts: %r" % opts
+
+    return opts
+
+
+def get_and_write_conf_file(obj_name, target_path, env_options):
+    provider_settings = {
+        'aws_identity': env_options['AWS_ACCESS_KEY_ID'],
+        'aws_secret': env_options['AWS_SECRET_ACCESS_KEY'],
+        'encryption': False,  # I guess?
+        'native': True,
+        'account': 'notused',
+        'container': 'notused',
+        'aws_bucket': env_options['CONF_BUCKET'],
+    }
+    if env_options['CONF_ENDPOINT']:
+        provider_settings['aws_endpoint'] = env_options['CONF_ENDPOINT']
+    if env_options.get('AWS_SECURITY_TOKEN_STRING', None):
+        provider_settings['aws_session_token'] = \
+            env_options['AWS_SECURITY_TOKEN_STRING']
+    provider = SyncS3(provider_settings)
+    resp = provider.get_object(obj_name)
+    with open(target_path, 'wb') as fh:
+        for chunk in resp.body:
+            fh.write(chunk)
 
 
 class ProxyMCController(Controller):
@@ -238,6 +306,24 @@ def app_factory(global_conf, **local_conf):
     """paste.deploy app factory for creating WSGI proxy apps."""
     conf = global_conf.copy()
     conf.update(local_conf)
-    conf_file = conf.get('conf_file', '/etc/swift-s3-sync/sync.json')
-    app = ProxyMCApplication(conf_file, conf)
+
+    sync_conf_path = os.path.sep + os.path.join('tmp', 'sync.json')
+    # This gets called more than once on startup; first as root, then as the
+    # configured user.  Depending on umask, if root writes this file down, then
+    # when the 2nd invocation tries to write it down, it'll fail.
+    # We solve this writing it down the first time (instantiation of our stuff
+    # will fail otherwise), but chowning the file to the final user if we're
+    # currently euid == 0.
+    sync_conf_file_name = conf.get('conf_file',
+                                   '/etc/swift-s3-sync/sync.json').lstrip('/')
+
+    env_options = get_env_options()
+    get_and_write_conf_file(sync_conf_file_name, sync_conf_path, env_options)
+
+    if os.geteuid() == 0:
+        user_ent = pwd.getpwnam(conf.get('user', 'swift'))
+        os.chown(sync_conf_path, user_ent.pw_uid, user_ent.pw_gid)
+        os.chmod(sync_conf_path, 0o640)
+
+    app = ProxyMCApplication(sync_conf_path, conf)
     return app

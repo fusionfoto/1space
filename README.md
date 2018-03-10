@@ -282,6 +282,95 @@ to keep state).
 If you would like to examine the logs from each of the services, all logs are in
 /var/log (e.g. /var/log/swift-s3-sync.log).
 
+### Deploying proxymc
+
+Built docker images are tagged like so:
+
+```
+REPOSITORY                TAG                 IMAGE ID            CREATED             SIZE
+swiftstack/proxymc        0.1.26-5-gfa7e35e   d11331475b2b        2 hours ago         692MB
+```
+
+The tag portion is derived from git revparse of the swift-s3-sync repo whose
+code was put into the image.
+
+You would reference the above image as `swiftstack/proxymc:0.1.26-5-gfa7e35e`
+
+
+## For testing
+
+You can build a proxymc container image using the code in your development
+tree like so (you can specify a different `ss-swift` tag to use with another,
+optional command-line arg):
+
+```
+cd proxymc_docker
+./build_docker_image.py --swift-s3-sync-tag DEV --s3proxy
+```
+
+Then run it like this (this is interactive, so it'll steal your terminal and
+you will just see supervisord console output):
+```
+docker run -it -e AWS_ACCESS_KEY_ID=s3-sync-test -e AWS_SECRET_ACCESS_KEY=s3-sync-test swiftstack/proxymc:0.1.26-5-gfa7e35e
+```
+
+The bucket name used will be whatever `build_docker_image.py` was told to use
+(defaults to `dockertest2`) and this code tree's config files from
+`test/container/` will be placed into the S3Proxy storage in that bucket in
+the built Docker image, during image building.
+
+## For real (Amazon ECS)
+
+1. Create or select an existing S3 bucket to use.
+1. Create an IAM role with a policy that allows List, Read, and Write Actions
+   for the S3 Service for the Resources, `arn:aws:s3:::BUCKET` and
+   `arn:aws:s3:::BUCKET/*`.  I called mine `docker-s3` and will use that name
+   going forward.
+1. Create or select a VPC
+1. Create a network Security Group for your proxymc container; you will want
+   Inbound rules to port `8081/tcp` with Source Network locked down to the
+   public IP of your home ISP connection or our office ISP connection.  That's
+   the only security the proxymc deployment will have at this time (it also
+   won't have TLS protection either).
+1. Enable ECS and set up a Docker Container Registry.  I named mine
+   `dbishop/swiftstack/proxymc` but you can use whatever.  You will need the
+   full repository URI in later steps.
+1. See below for building and pushing the Docker image, then come back here.
+1. Create a `proxymc.conf` file (you can use the example one in
+   `test/container/` but in any case make sure you know the value of the
+   `conf_file = something.json` field, because you will need that later.
+1. Upload `proxymc.conf` using `s3cmd` to your S3 bucket.
+1. Copy the `/etc/swift-s3-sync/sync.json` file from one of your Swift
+   nodes and edit it to have a section like this:
+   ```
+      "proxy_mc_config": {
+          "swift_baseurl": "https://a-public-hostname"
+      },
+   ```
+1. Upload that edited file as `sync-config.json` (or whatever your `proxymc.conf`
+   file says) into your S3 bucket using `s3cmd`.
+1. Create an ECS Cluster with a Task Definition.
+1. Give the Task Definition a Task Role of the IAM role you created above
+   (like my `docker-s3`).  Set the networking to `awsvpc`. Select FARGATE
+   every chance you get.  Task
+   execution role should be `ecsTaskExecutionRole`.  Add your container.
+   You can set up a host mapping for port `8081/tcp` but it will be ignored
+   for network type `awsvpc` anyway.
+1. You can set up a Service to run some number of Tasks (I set it to 1).
+1. Now your Service should start one Task and once it's in the RUNNING state,
+   you can click on it and then the Logs tab and scroll around and see if it
+   started ok.  Currently lack of obvious error means it started OK--you won't
+   see much "I succeeded" logging yet.
+
+To build the Docker image and upload it to your Amazon ECS Repository:
+```
+cd proxymc_docker
+./build_docker_image.py --ss-swift-tag ss-release-2.16.0.2 \
+  --swift-s3-sync-tag 0.1.26 --config-bucket YOUR-S3-BUCKET-NAME \
+  --repository YOUR-ECS-REPOSITORY-URI --push
+```
+
+
 ### Working with Docker directly
 
 ## Build
