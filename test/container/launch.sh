@@ -60,8 +60,18 @@ swift-s3-migrator --log-level debug \
 /usr/bin/java -DLOG_LEVEL=debug -jar /s3proxy/s3proxy \
     --properties /swift-s3-sync/test/container/s3proxy.properties \
     2>&1 > /var/log/s3proxy.log &
+sleep 4  # let S3Proxy start up
 
-proxymc /swift-s3-sync/test/container/proxymc.conf \
-    2>&1 > /var/log/proxymc.log &
+# Set up stuff for proxymc
+export CONF_BUCKET=proxymc-conf
+export CONF_ENDPOINT=http://localhost:10080
+pip install s3cmd
+s3cmd -c /swift-s3-sync/s3cfg mb s3://$CONF_BUCKET
+s3cmd -c /swift-s3-sync/s3cfg put /swift-s3-sync/test/container/proxymc.conf \
+    s3://$CONF_BUCKET
+s3cmd -c /swift-s3-sync/s3cfg put /swift-s3-sync/test/container/swift-s3-sync.conf \
+    s3://$CONF_BUCKET/sync-config.json; \
+AWS_ACCESS_KEY_ID=s3-sync-test AWS_SECRET_ACCESS_KEY=s3-sync-test proxymc \
+    2>&1 >> /var/log/proxymc.log &
 
 /usr/local/bin/supervisord -n -c /etc/supervisord.conf

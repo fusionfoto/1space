@@ -69,7 +69,7 @@ RUN /bin/bash -c '/usr/bin/java -DLOG_LEVEL=debug -jar /s3proxy/s3proxy \
     sleep 4; \
     s3cmd mb s3://__CONFBUCKET__; \
     s3cmd put /tmp/proxymc.conf s3://__CONFBUCKET__; \
-    s3cmd put /tmp/swift-s3-sync.conf s3://__CONFBUCKET__/swift-s3-sync/test/container/swift-s3-sync.conf; \
+    s3cmd put /tmp/swift-s3-sync.conf s3://__CONFBUCKET__/sync-config.json; \
     rm /tmp/{proxymc,swift-s3-sync}.conf; \
     kill %1'
 __S3PROXY_END__
