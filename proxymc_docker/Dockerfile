@@ -17,9 +17,12 @@ __S3PROXY_END__
     python-dev \
     python-pip \
     python-setuptools \
-    rsyslog \
+    python-software-properties \
+    software-properties-common \
     supervisor \
     wget \
+ && add-apt-repository ppa:adiscon/v8-stable \
+ && apt-get update && apt-get install -y rsyslog rsyslog-omstdout \
  && rm -rf /var/lib/apt/lists/* \
  && pip install -U pip
 
@@ -44,9 +47,7 @@ COPY .supervisord.conf /etc/supervisor/conf.d/supervisord.conf
 
 # Add rsyslog configuration files
 COPY files/0-swift.conf /etc/rsyslog.d/0-swift.conf
-COPY files/50-default.conf /etc/rsyslog.d/50-default.conf
 COPY files/rsyslog.conf /etc/rsyslog.conf
-RUN chown -R syslog:adm /var/log
 
 # The build_docker_image.py command will replace this "template variable"
 ENV CONF_BUCKET __CONFBUCKET__
