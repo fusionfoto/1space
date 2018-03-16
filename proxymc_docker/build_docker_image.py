@@ -49,19 +49,25 @@ def prepare_code_copy_sources(args):
         '/usr/bin/env', 'python', './setup.py', 'install',
         '--prefix', '/usr/local', '--root', args.swift_s3_sync_tree, '-O2'],
         cwd=args.swift_s3_sync_dir)
+    if args.swift_s3_sync_tag == 'DEV':
+        shutil.copy(os.path.join(args.swift_s3_sync_dir, 'requirements.txt'),
+                    os.path.join(args.swift_s3_sync_tree, '..'))
 
     if args.s3proxy:
         shutil.copy(os.path.join(args.swift_s3_sync_dir, 's3cfg'),
-                    os.path.join(args.base_dir, 'files'))
-        shutil.copy(os.path.join(args.swift_s3_sync_dir, 'test', 'container',
-                                 's3proxy.properties'),
-                    os.path.join(args.base_dir, 'files'))
-        shutil.copy(os.path.join(args.swift_s3_sync_dir,
-                                 'test', 'container', 'proxymc.conf'),
-                    os.path.join(args.base_dir, 'files'))
-        shutil.copy(os.path.join(args.swift_s3_sync_dir,
-                                 'test', 'container', 'swift-s3-sync.conf'),
-                    os.path.join(args.base_dir, 'files'))
+                    os.path.join(args.base_dir, 'files', '.s3cfg'))
+        shutil.copy(
+            os.path.join(args.swift_s3_sync_dir, 'test', 'container',
+                         's3proxy.properties'),
+            os.path.join(args.base_dir, 'files', '.s3proxy.properties'))
+        shutil.copy(
+            os.path.join(args.swift_s3_sync_dir, 'test', 'container',
+                         'proxymc.conf'),
+            os.path.join(args.base_dir, 'files', '.proxymc.conf'))
+        shutil.copy(
+            os.path.join(args.swift_s3_sync_dir, 'test', 'container',
+                         'swift-s3-sync.conf'),
+            os.path.join(args.base_dir, 'files', '.swift-s3-sync.conf'))
 
 
 def mungify(args, src_path, dst_path):
@@ -101,6 +107,11 @@ def build_image(args):
 
     os.unlink(dst_dockerfile_path)
     os.unlink(dst_sup_path)
+    if args.s3proxy:
+        os.unlink(os.path.join(args.base_dir, 'files', '.s3proxy.properties'))
+        os.unlink(os.path.join(args.base_dir, 'files', '.s3cfg'))
+        os.unlink(os.path.join(args.base_dir, 'files', '.proxymc.conf'))
+        os.unlink(os.path.join(args.base_dir, 'files', '.swift-s3-sync.conf'))
 
     if args.push:
         try:
@@ -153,6 +164,7 @@ if __name__ == '__main__':
     else:
         args.swift_s3_sync_dir = os.path.join(args.base_dir,
                                               'files', 'swift-s3-sync')
+
     args.swift_tree = os.path.join(args.swift_dir, 'tree')
     args.swift_s3_sync_tree = os.path.join(args.base_dir,
                                            'files', 'swift-s3-sync', 'tree')

@@ -61,9 +61,10 @@ RUN adduser --system --home /etc/swift --group swift
 # OPTIONAL: put some S3Proxy configuration files and data into the right
 #           bucket
 __S3PROXY_BEGIN__
-COPY files/s3proxy.properties /s3proxy/
-COPY files/s3cfg /root/.s3cfg
-COPY files/proxymc.conf files/swift-s3-sync.conf /tmp/
+COPY files/.s3proxy.properties /s3proxy/s3proxy.properties
+COPY files/.s3cfg /root/.s3cfg
+COPY files/.proxymc.conf /tmp/proxymc.conf
+COPY files/.swift-s3-sync.conf /tmp/swift-s3-sync.conf
 RUN /bin/bash -c '/usr/bin/java -DLOG_LEVEL=debug -jar /s3proxy/s3proxy \
     --properties /s3proxy/s3proxy.properties & \
     sleep 4; \
