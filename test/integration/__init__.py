@@ -148,11 +148,9 @@ class TestCloudSyncBase(unittest.TestCase):
             self.SWIFT_CREDS['dst']['user'],
             self.SWIFT_CREDS['dst']['key'])
         self.proxymc_client = swiftclient.client.Connection(
-            self.SWIFT_CREDS['authurl'],
+            'http://localhost:%d/auth/v1.0' % (self.PORTS['proxymc'],),
             self.SWIFT_CREDS['src']['user'],
             self.SWIFT_CREDS['src']['key'],
-            preauthurl='http://localhost:%d/v1/AUTH_test' % (
-                self.PORTS['proxymc'],),
         )
         s3 = [container for container in self.test_conf['containers']
               if container.get('protocol', 's3') == 's3'][0]

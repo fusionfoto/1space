@@ -51,7 +51,6 @@ def get_env_options():
         resp = requests.get(creds_uri)
         resp.raise_for_status()
         aws_creds = resp.json()
-        print "aws_creds: %r" % aws_creds
         opts['AWS_ACCESS_KEY_ID'] = aws_creds['AccessKeyId']
         opts['AWS_SECRET_ACCESS_KEY'] = aws_creds['SecretAccessKey']
         opts['AWS_SECURITY_TOKEN_STRING'] = aws_creds['Token']
@@ -68,8 +67,6 @@ def get_env_options():
 
     opts['CONF_ENDPOINT'] = os.environ.get('CONF_ENDPOINT', '')
     opts['CONF_NAME'] = os.environ.get('CONF_NAME', 'proxymc.conf')
-
-    print "env_opts: %r" % opts
 
     return opts
 
@@ -94,6 +91,38 @@ def get_and_write_conf_file(obj_name, target_path, env_options):
     with open(target_path, 'wb') as fh:
         for chunk in resp.body:
             fh.write(chunk)
+
+
+def forward_raw_swift_req(swift_baseurl, req):
+    scheme, netloc, _, _, _ = urlsplit(swift_baseurl)
+    ssl = (scheme == 'https')
+    swift_host, swift_port = utils.parse_socket_string(netloc,
+                                                       443 if ssl else 80)
+    swift_port = int(swift_port)
+    if ssl:
+        conn = bufferedhttp.HTTPSConnection(swift_host, port=swift_port)
+    else:
+        conn = bufferedhttp.BufferedHTTPConnection(swift_host, port=swift_port)
+    conn.path = req.path_qs
+    conn.putrequest(req.method, req.path_qs, skip_host=True)
+    for header, value in filter_hop_by_hop_headers(req.headers.items()):
+        if header.lower() == 'host':
+            continue
+        conn.putheader(header, str(value))
+    conn.putheader('Host', str(swift_host))
+    conn.endheaders()
+
+    resp = conn.getresponse()
+    headers = dict(filter_hop_by_hop_headers(resp.getheaders()))
+    # XXX If this is a GET, do we want to "tee" the Swift object into the
+    # remote (S3) store as it's fed back out to the client??
+    body_len = 0 if req.method == 'HEAD' \
+        else int(headers['content-length'])
+    app_iter = ClosingResourceIterable(
+        resource=conn, data_src=resp,
+        length=body_len)
+    return swob.Response(app_iter=app_iter, status=resp.status,
+                         headers=headers, request=req)
 
 
 class ProxyMCController(Controller):
@@ -129,40 +158,6 @@ class ProxyMCController(Controller):
                                   aco_str)
             raise swob.HTTPForbidden()
 
-    def forward_raw_swift_req(self, req):
-        scheme, netloc, _, _, _ = urlsplit(self.app.swift_baseurl)
-        ssl = (scheme == 'https')
-        swift_host, swift_port = utils.parse_socket_string(netloc,
-                                                           443 if ssl else 80)
-        swift_port = int(swift_port)
-        if ssl:
-            conn = bufferedhttp.HTTPSConnection(swift_host, port=swift_port)
-        else:
-            conn = bufferedhttp.BufferedHTTPConnection(swift_host,
-                                                       port=swift_port)
-        conn.path = req.path_qs
-        conn.putrequest(req.method, req.path_qs, skip_host=True)
-        for header, value in filter_hop_by_hop_headers(req.headers.items()):
-            if header.lower() == 'host':
-                continue
-            conn.putheader(header, str(value))
-        conn.putheader('Host', str(swift_host))
-        conn.endheaders()
-
-        resp = conn.getresponse()
-        headers = dict(filter_hop_by_hop_headers(resp.getheaders()))
-        # XXX If this is a GET, do we want to "tee" the Swift object into the
-        # remote (S3) store as it's fed back out to the client??
-        body_len = 0 if req.method == 'HEAD' \
-            else int(headers['content-length'])
-        app_iter = ClosingResourceIterable(
-            resource=conn, data_src=resp,
-            length=body_len)
-        return swob.Response(app_iter=app_iter,
-                             status=resp.status,
-                             headers=headers,
-                             request=req)
-
     def GETorHEAD(self, req):
         # Note: account operations were already filtered out in
         # get_controller()
@@ -172,7 +167,7 @@ class ProxyMCController(Controller):
             #
             # ... but for now, just only forward to onprem Swift cluster just
             # so we get a valid response back to a client instead of a 500.
-            return self.forward_raw_swift_req(req)
+            return forward_raw_swift_req(self.app.swift_baseurl, req)
 
         # Try "remote" (with respect to config--this store should actually be
         # "closer" to this daemon) first
@@ -190,7 +185,7 @@ class ProxyMCController(Controller):
 
         # Nope... try "local" (with respect to config--this swift cluster
         # should actually be "further away from" this daemon) swift.
-        return self.forward_raw_swift_req(req)
+        return forward_raw_swift_req(self.app.swift_baseurl, req)
 
     @utils.public
     def GET(self, req):
@@ -209,7 +204,7 @@ class ProxyMCController(Controller):
             # metadata headers in S3 so it can be sync'ed down into the Swift
             # cluster later?  Who knows!
             self.app.logger.debug('Forwarding container PUT to real Swift')
-            return self.forward_raw_swift_req(req)
+            return forward_raw_swift_req(self.app.swift_baseurl, req)
         self.app.logger.debug('put_object_from_swift_req: %s %r %r',
                               self.object_name, self.provider.__dict__, req)
         remote_resp = self.provider.put_object_from_swift_req(
@@ -239,7 +234,9 @@ class ProxyMCApplication(ProxyApplication):
     Implements a Swift API endpoint to run on cloud compute nodes and
     seamlessly provides R/W access to the "cloud sync" data namespace.
     """
-    def __init__(self, conf_file, conf, memcache=None, logger=None):
+    def __init__(self, sync_conf_path, conf, memcache=None, logger=None):
+        self.conf = conf
+
         if logger is None:
             self.logger = utils.get_logger(conf, log_route='proxymc')
         else:
@@ -250,15 +247,18 @@ class ProxyMCApplication(ProxyApplication):
             conf.get('deny_host_headers', '').split(',') if host.strip()]
 
         try:
-            with open(conf_file, 'rb') as fp:
-                self.json_conf = json.load(fp)
+            with open(sync_conf_path, 'rb') as fp:
+                self.sync_conf = json.load(fp)
         except (IOError, ValueError) as err:
-            self.logger.warning("Couldn't read conf_file %r: %s; disabling",
-                                conf_file, err)
-            self.json_conf = {'containers': []}
+            # There's no sane way we should get executed without something
+            # having fetched and placed a sync config where our config is
+            # telling us to look.  So if we can't find it, there's nothing
+            # better to do than to fully exit the process.
+            exit("Couldn't read sync_conf_path %r: %s; exiting" % (
+                sync_conf_path, err))
 
         self.sync_profiles = {}
-        for cont in self.json_conf['containers']:
+        for cont in self.sync_conf['containers']:
             key = (cont['account'].encode('utf-8'),
                    cont['container'].encode('utf-8'))
             if cont['container'] and cont['container'] != '/*':
@@ -268,7 +268,7 @@ class ProxyMCApplication(ProxyApplication):
                 cont['provider'] = None
             self.sync_profiles[key] = cont
 
-        self.swift_baseurl = self.json_conf['proxymc_config']['swift_baseurl']
+        self.swift_baseurl = conf.get('swift_baseurl')
 
     def get_controller(self, req):
         # Maybe handle /info specially here, like our superclass'

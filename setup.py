@@ -23,6 +23,7 @@ setup(name='swift-s3-sync',
           ],
           'paste.filter_factory': [
               'cloud-shunt = s3_sync.shunt:filter_factory',
+              'proxymc-auth = s3_sync.proxymc_auth:filter_factory',
           ],
           'paste.app_factory': [
               'proxymc = s3_sync.proxymc_app:app_factory',
