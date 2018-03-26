@@ -22,5 +22,6 @@ setup(name='swift-s3-sync',
           ],
           'paste.filter_factory': [
               'cloud-shunt = s3_sync.shunt:filter_factory',
+              'destination-delete = s3_sync.destination_delete:filter_factory'
           ],
       })
