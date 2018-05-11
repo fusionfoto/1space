@@ -656,11 +656,10 @@ class TestMigrator(TestCloudSyncBase):
         self.assertTrue(key_val_copied(key2, val2))
         self.assertTrue(key_gone(key1))
 
-        with self.migrator_running():
-            # verify really copied
-            wait_for_condition(5, key1_copied)
-            self.assertTrue(key_gone(key2))
-            self.assertTrue(val3_copied)
+        self.run_migrator_once()
+        self.assertTrue(key1_copied())
+        self.assertTrue(key_gone(key2))
+        self.assertTrue(val3_copied())
 
         # validate the acl was copied
         remote_swift = swiftclient.client.Connection(
