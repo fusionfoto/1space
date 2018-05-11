@@ -27,6 +27,7 @@ import swiftclient
 import time
 import unittest
 import urllib
+from s3_sync.migrator import Status
 
 
 class WaitTimedOut(RuntimeError):
@@ -366,6 +367,9 @@ class TestCloudSyncBase(unittest.TestCase):
             klass.SWIFT_CREDS['cloud-connector']['user'],
             klass.SWIFT_CREDS['cloud-connector']['key'],
             retries=0)
+        klass.migration_status = Status(klass.test_conf.get(
+            'migrator_settings', {}).get(
+                'status_file', '/var/log/swift-s3-migrator.log'))
 
     @classmethod
     def tearDownClass(klass):
@@ -429,6 +433,7 @@ class TestCloudSyncBase(unittest.TestCase):
         if old_migrator_pid:
             kill_a_pid(old_migrator_pid)
 
+        print "MSD: migrator_cmd = '%r'" % self.migrator_cmd
         devnull = open('/dev/null', 'wb')
         proc = subprocess.Popen(
             ['/usr/bin/python', '/usr/local/bin/swift-s3-migrator',
@@ -443,6 +448,17 @@ class TestCloudSyncBase(unittest.TestCase):
             devnull.close()
             if proc.poll() is None:
                 kill_a_pid(proc.pid)
+
+    def run_migrator_once(self):
+        devnull = open('/dev/null', 'wb')
+        proc = subprocess.Popen(
+            ['/usr/bin/python', '/usr/local/bin/swift-s3-migrator',
+             '--log-level', 'debug', '--config',
+             '/swift-s3-sync/test/container/swift-s3-sync.conf', '--once'],
+            close_fds=True, cwd='/',
+            stdout=devnull, stderr=devnull)
+        proc.wait()
+        devnull.close()
 
     def get_swift_tree(self, conn):
         return [

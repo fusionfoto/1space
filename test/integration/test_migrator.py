@@ -698,12 +698,8 @@ class TestMigrator(TestCloudSyncBase):
         time.sleep(1)
         conn_local.post_container(
             'prop_metadata_test', headers={mykey: 'local'})
-        with self.migrator_running():
-            # TODO (MSD): This should be replaced with a mechanism for
-            # executing the migrator once
-            with self.assertRaises(WaitTimedOut):
-                wait_for_condition(3, partial(is_where, 'remote'))
-            self.assertTrue(is_where('local'))
+        self.run_migrator_once()
+        self.assertTrue(is_where('local'))
 
     def test_object_metadata_copied_only_when_newer(self):
         migration = self.swift_migration()
@@ -738,12 +734,8 @@ class TestMigrator(TestCloudSyncBase):
         time.sleep(1)
         conn_local.post_object(
             migration['container'], key, headers={where_header: 'local'})
-        with self.migrator_running():
-            # TODO: Replace this silliness with a means of calling migrator
-            # run once.
-            with self.assertRaises(WaitTimedOut):
-                wait_for_condition(3, partial(is_where, 'remote'))
-            self.assertTrue(is_where('local'))
+        self.run_migrator_once()
+        self.assertTrue(is_where('local'))
 
     def test_propagate_object_meta(self):
         migration = self.swift_migration()
