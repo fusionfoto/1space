@@ -24,7 +24,7 @@ docker container rm cloud-connector 2>/dev/null ||:
 
 docker run -d -v `pwd`:/swift-s3-sync \
     --network swift-s3-sync-net --network-alias cloud-connector \
-    --restart on-failure --name cloud-connector \
+    --restart unless-stopped --name cloud-connector \
     -p "${HOST_CLOUD_CONNECTOR_PORT:-8081}:8081" \
     -e AWS_ACCESS_KEY_ID=s3-sync-test -e AWS_SECRET_ACCESS_KEY=s3-sync-test \
     -e CONF_ENDPOINT=http://swift-s3-sync:10080 \
