@@ -2,6 +2,12 @@ import json
 import logging
 import s3_sync.daemon_utils
 import s3_sync.migrator
+from swift.common.ring import Ring
+from swift.common.utils import whataremyips
+
+
+CONTAINER_RING = Ring('/etc/swift', ring_name='container')
+MYIPS = whataremyips('0.0.0.0')
 
 
 class TempMigratorStatus(object):
@@ -38,4 +44,5 @@ class MigratorFactory(object):
             self.config, self.SWIFT_DIR, self.migrator_config['workers'] + 1)
         return s3_sync.migrator.Migrator(
             migration, status, self.migrator_config['items_chunk'],
-            self.migrator_config['workers'], ic_pool, self.logger, 0, 1)
+            self.migrator_config['workers'], ic_pool, self.logger, MYIPS,
+            CONTAINER_RING)

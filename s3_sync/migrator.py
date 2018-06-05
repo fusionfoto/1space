@@ -40,7 +40,9 @@ from .utils import (convert_to_local_headers, convert_to_swift_headers,
 from swift.common.http import HTTP_NOT_FOUND, HTTP_CONFLICT
 from swift.common import swob
 from swift.common.internal_client import UnexpectedResponse
-from swift.common.utils import FileLikeIter, Timestamp, quote
+from swift.common.ring import Ring
+from swift.common.ring.utils import is_local_device
+from swift.common.utils import FileLikeIter, Timestamp, quote, whataremyips
 
 
 EQUAL = 0
@@ -55,6 +57,15 @@ IGNORE_KEYS = set(('status', 'aws_secret', 'all_buckets', 'custom_prefix'))
 MigrateObjectWork = namedtuple('MigrateObjectWork', 'aws_bucket container key')
 UploadObjectWork = namedtuple('UploadObjectWork', 'container key object '
                               'headers aws_bucket')
+
+
+def is_local_container(acct, cont, myips, ring):
+    _, container_nodes = ring.get_nodes(acct.encode('utf-8'),
+                                        cont.encode('utf-8'))
+    if any(is_local_device(myips, None, node['ip'], node['port'])
+           for node in container_nodes):
+        return True
+    return False
 
 
 class MigrationError(Exception):
@@ -227,7 +238,7 @@ class Status(object):
 class Migrator(object):
     '''List and move objects from a remote store into the Swift cluster'''
     def __init__(self, config, status, work_chunk, workers, swift_pool, logger,
-                 node_id, nodes):
+                 myips, container_ring):
         self.config = dict(config)
         if 'container' not in self.config:
             # NOTE: in the future this may no longer be true, as we may allow
@@ -246,8 +257,8 @@ class Migrator(object):
         self.errors = eventlet.queue.Queue()
         self.workers = workers
         self.logger = logger
-        self.node_id = node_id
-        self.nodes = nodes
+        self.myips = myips
+        self.container_ring = container_ring
         self.provider = None
 
     def next_pass(self):
@@ -299,7 +310,8 @@ class Migrator(object):
                 self._maybe_delete_internal_container(local_container['name'])
                 local_container = next(local_iterator)
 
-            if index % self.nodes == self.node_id:
+            if is_local_container(self.config['account'], remote_container,
+                                  self.myips, self.container_ring):
                 # NOTE: we cannot remap container names when migrating the
                 # entire account
                 self.config['aws_bucket'] = remote_container
@@ -970,9 +982,11 @@ class Migrator(object):
 
 
 def process_migrations(migrations, migration_status, internal_pool, logger,
-                       items_chunk, workers, node_id, nodes):
+                       items_chunk, workers, myips, container_ring):
     for index, migration in enumerate(migrations):
-        if migration['aws_bucket'] == '/*' or index % nodes == node_id:
+        if migration['aws_bucket'] == '/*' or is_local_container(
+                migration['account'], migration['aws_bucket'], myips,
+                container_ring):
             if migration.get('remote_account'):
                 src_account = migration.get('remote_account')
             else:
@@ -983,17 +997,18 @@ def process_migrations(migrations, migration_status, internal_pool, logger,
             migrator = Migrator(migration, migration_status,
                                 items_chunk, workers,
                                 internal_pool, logger,
-                                node_id, nodes)
+                                myips, container_ring)
             migrator.next_pass()
             migrator.close()
 
 
 def run(migrations, migration_status, internal_pool, logger, items_chunk,
-        workers, node_id, nodes, poll_interval, once):
+        workers, poll_interval, once, myips, container_ring):
     while True:
         cycle_start = time.time()
         process_migrations(migrations, migration_status, internal_pool, logger,
-                           items_chunk, workers, node_id, nodes)
+                           items_chunk, workers, myips,
+                           container_ring)
         elapsed = time.time() - cycle_start
         naptime = max(0, poll_interval - elapsed)
         msg = 'Finished cycle in %0.2fs' % elapsed
@@ -1040,13 +1055,10 @@ def main():
     swift_dir = conf.get('swift_dir', '/etc/swift')
     internal_pool = create_ic_pool(conf, swift_dir, workers)
 
-    if 'process' not in migrator_conf or 'processes' not in migrator_conf:
-        print 'Missing "process" or "processes" settings in the config file'
-        exit(-1)
+    container_ring = Ring(swift_dir, ring_name='container')
+    myips = whataremyips('0.0.0.0')
 
     items_chunk = migrator_conf['items_chunk']
-    node_id = int(migrator_conf['process'])
-    nodes = int(migrator_conf['processes'])
     poll_interval = float(migrator_conf.get('poll_interval', 5))
 
     migrations = conf.get('migrations', [])
@@ -1054,7 +1066,8 @@ def main():
     migration_status.prune(migrations)
 
     run(migrations, migration_status, internal_pool, logger, items_chunk,
-        workers, node_id, nodes, poll_interval, args.once)
+        workers, poll_interval, args.once, myips,
+        container_ring)
 
 
 if __name__ == '__main__':

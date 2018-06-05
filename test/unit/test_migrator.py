@@ -490,9 +490,11 @@ class TestMigratorUtils(unittest.TestCase):
         with open(self.status_file_path) as rf:
             self.assertEqual(json.load(rf), existing_status)
 
+    @mock.patch('s3_sync.migrator.is_local_container')
     @mock.patch('s3_sync.migrator.time')
-    def test_status_prune_saved(self, time_mock):
+    def test_status_prune_saved(self, time_mock, is_local):
         time_mock.time.return_value = 10000
+        is_local.return_value = True
         self.setup_status_file_path()
         config = {
             "account": "AUTH_dev",
@@ -631,6 +633,8 @@ class TestMigrator(unittest.TestCase):
         self.logger = logging.getLogger()
         self.stream = StringIO()
         self.logger.addHandler(logging.StreamHandler(self.stream))
+        s3_sync.migrator.is_local_container = mock.Mock()
+        s3_sync.migrator.is_local_container.return_value = True
         self.migrator = s3_sync.migrator.Migrator(
             config, None, 1000, 5, pool, self.logger, 0, 1)
         self.migrator.status = mock.Mock()
@@ -1937,8 +1941,8 @@ class TestMain(unittest.TestCase):
             'logger': self.logger,
             'items_chunk': None,
             'workers': 5,
-            'node_id': 0,
-            'nodes': 1,
+            'myips': ['127.0.0.1'],
+            'container_ring': mock.Mock(),
             'poll_interval': 30,
             'once': True,
         }
@@ -2006,12 +2010,21 @@ class TestMain(unittest.TestCase):
 
         old_run = s3_sync.migrator.run
         with self.patch('setup_context') as mock_setup_context,\
+                self.patch('Ring') as mock_ring,\
+                self.patch('is_local_device') as mock_is_local,\
                 self.patch('Migrator') as mock_migrator,\
                 self.patch('Status') as mock_status,\
                 self.patch(
                     'run',
                     new_callable=lambda: mock.Mock(side_effect=old_run))\
                 as mock_run:
+            fake_c_ring = mock.Mock()
+            mock_ring.return_value = fake_c_ring
+            fake_c_ring.get_nodes.return_value = ('foo', [
+                {'ip': 'a.b.c', 'port': 6100},
+                {'ip': 'b.c.a', 'port': 6100},
+                {'ip': 'b.c.d', 'port': 6100}])
+            mock_is_local.return_value = (False, True, False)
             mock_setup_context.return_value = (
                 mock.Mock(log_level='warn', console=True, once=True),
                 config)
@@ -2020,7 +2033,7 @@ class TestMain(unittest.TestCase):
             mock_status.assert_called_once_with('/test/status')
             mock_migrator.assert_called_once_with(
                 config['migrations'][0], mock_status.return_value, 42, 1337,
-                mock.ANY, mock.ANY, 0, 15)
+                mock.ANY, mock.ANY, mock.ANY, mock.ANY)
             mock_run.assert_called_once_with(
                 config['migrations'], mock_status.return_value, mock.ANY,
-                mock.ANY, 42, 1337, 0, 15, 60, True)
+                mock.ANY, 42, 1337, 60, True, mock.ANY, fake_c_ring)
