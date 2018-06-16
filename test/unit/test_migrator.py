@@ -1767,6 +1767,40 @@ class TestMigrator(unittest.TestCase):
             {internal_header: '1500000000.00000',
              'x-timestamp': '1500000000.00000'})
 
+    def test_reconcile_deleted_timestamps(self):
+        internal_header = s3_sync.utils.get_sys_migrator_header('object')
+        obj_headers = {
+            'x-timestamp': '1500000000.00000',
+            'x-backend-timestamp': '1500000001.00000_0000000000000001',
+            'x-backend-durable-timestamp': '1500000002.00000_0000000000000001',
+            'last-modified': 'Fri, 14 Jul 2017 02:40:10 GMT',
+            internal_header: '1500000000.00000',
+        }
+        tests = [
+            ('x-backend-durable-timestamp',
+             '1500000002.00000_0000000000000002'),
+            ('x-backend-timestamp', '1500000001.00000_0000000000000002'),
+            ('x-timestamp', '1500000000.00000_0000000000000001'),
+            ('last-modified', '1500000010.00000_0000000000000001'),
+            (None, None),
+        ]
+        self.swift_client.get_object_metadata.return_value = obj_headers
+        self.swift_client.delete_object.return_value = \
+            ProviderResponse(True, 204, {}, [])
+
+        for use, want in tests:
+
+            self.migrator._reconcile_deleted_objects('foo', 'bar')
+
+            hdrs = {}
+            if want:
+                hdrs = {'x-timestamp': want}
+            self.assertEqual(
+                self.swift_client.delete_object.call_args,
+                mock.call(self.migrator.config['account'], 'foo', 'bar', hdrs))
+            if use:
+                del(obj_headers[use])
+
 
 class TestStatus(unittest.TestCase):
 
